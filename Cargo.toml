@@ -1,0 +1,64 @@
+[package]
+name = "stm32-keypad"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+embassy-stm32 = { version = "0.1.0", features = [
+  "defmt",
+  "stm32f411ce",
+  "unstable-pac",
+  "memory-x",
+  "time-driver-any",
+  "exti",
+  "chrono",
+] }
+embassy-executor = { version = "0.4.0", features = [
+  "arch-cortex-m",
+  "executor-thread",
+  "executor-interrupt",
+  "defmt",
+  "integrated-timers",
+] }
+embassy-time = { version = "0.2", features = [
+  "defmt",
+  "defmt-timestamp-uptime",
+  "tick-hz-32_768",
+] }
+embassy-usb = { version = "0.1.0", features = ["defmt", "usbd-hid"] }
+
+defmt = "0.3"
+defmt-rtt = "0.4"
+
+cortex-m = { version = "0.7.6", features = [
+  "inline-asm",
+  "critical-section-single-core",
+] }
+cortex-m-rt = "0.7.0"
+embedded-hal = "0.2.6"
+embedded-io = { version = "0.6.0" }
+embedded-io-async = { version = "0.6.1" }
+panic-probe = { version = "0.3", features = ["print-defmt"] }
+futures = { version = "0.3.17", default-features = false, features = [
+  "async-await",
+] }
+heapless = { version = "0.8", default-features = false }
+nb = "1.0.0"
+embedded-storage = "0.3.1"
+chrono = { version = "^0.4", default-features = false }
+usbd-hid = "0.6.0"
+debouncr = "0.2.2"
+
+[patch.crates-io]
+embassy-stm32 = { git = "https://github.com/embassy-rs/embassy", rev = "7703f47c1ecac029f603033b7977d9a2becef48c" }
+embassy-executor = { git = "https://github.com/embassy-rs/embassy", rev = "7703f47c1ecac029f603033b7977d9a2becef48c" }
+embassy-time = { git = "https://github.com/embassy-rs/embassy", rev = "7703f47c1ecac029f603033b7977d9a2becef48c" }
+embassy-usb = { git = "https://github.com/embassy-rs/embassy", rev = "7703f47c1ecac029f603033b7977d9a2becef48c" }
+
+[profile.release]
+# debug = 2
+debug = false
+lto = true
+opt-level = "s"
+incremental = false
+codegen-units = 1
