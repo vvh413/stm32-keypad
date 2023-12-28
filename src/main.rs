@@ -9,6 +9,7 @@ use buttons::{Buttons, KEYS, KEYS_OFFSET, KEYS_SIGNAL, SECTOR_SIZE};
 use defmt::*;
 use embassy_executor::Spawner;
 use embassy_stm32::flash::Flash;
+use embassy_stm32::gpio::{AnyPin, Output, Pin};
 use embassy_stm32::rcc::*;
 use embassy_stm32::time::Hertz;
 use embassy_stm32::usb_otg::Driver;
@@ -50,7 +51,8 @@ fn init() -> Peripherals {
 }
 
 #[embassy_executor::task]
-async fn flash_task(mut flash: Flash<'static>) {
+async fn flash_task(mut flash: Flash<'static>, led: AnyPin) {
+  let mut led = Output::new(led, embassy_stm32::gpio::Level::High, embassy_stm32::gpio::Speed::Low);
   KEYS.lock(|keys| {
     let mut data = [0u8; 4];
     flash.read(KEYS_OFFSET, &mut data).unwrap();
@@ -60,9 +62,11 @@ async fn flash_task(mut flash: Flash<'static>) {
   });
   loop {
     KEYS_SIGNAL.wait().await;
+    led.toggle();
     let keys = KEYS.lock(|keys| *keys.borrow());
     flash.erase(KEYS_OFFSET, KEYS_OFFSET + SECTOR_SIZE).await.unwrap();
     flash.write(KEYS_OFFSET, &keys).await.unwrap();
+    led.toggle();
   }
 }
 
@@ -76,7 +80,7 @@ async fn main(spawner: Spawner) {
   let otg_fs_driver = Driver::new_fs(p.USB_OTG_FS, Irqs, p.PA12, p.PA11, &mut ep_out_buffer, config);
 
   let flash = Flash::new(p.FLASH, Irqs);
-  spawner.spawn(flash_task(flash)).unwrap();
+  spawner.spawn(flash_task(flash, p.PC13.degrade())).unwrap();
 
   let mut config = embassy_usb::Config::new(0x7668, 0x0001);
   config.manufacturer = Some("vvh413");
