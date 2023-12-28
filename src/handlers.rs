@@ -5,9 +5,11 @@ use embassy_usb::class::hid::{ReportId, RequestHandler};
 use embassy_usb::control::OutResponse;
 use embassy_usb::Handler;
 
-pub struct MyRequestHandler {}
+use crate::buttons::{KEYS, KEYS_SIGNAL};
 
-impl RequestHandler for MyRequestHandler {
+pub struct CustomRequestHandler {}
+
+impl RequestHandler for CustomRequestHandler {
   fn get_report(&self, id: ReportId, _buf: &mut [u8]) -> Option<usize> {
     info!("Get report for {:?}", id);
     None
@@ -15,6 +17,12 @@ impl RequestHandler for MyRequestHandler {
 
   fn set_report(&self, id: ReportId, data: &[u8]) -> OutResponse {
     info!("Set report for {:?}: {=[u8]}", id, data);
+    if data.len() == 4 {
+      KEYS.lock(|keys| {
+        keys.replace(data.try_into().unwrap());
+      });
+      KEYS_SIGNAL.signal(());
+    }
     OutResponse::Accepted
   }
 
@@ -28,19 +36,19 @@ impl RequestHandler for MyRequestHandler {
   }
 }
 
-pub struct MyDeviceHandler {
+pub struct DeviceHandler {
   configured: AtomicBool,
 }
 
-impl MyDeviceHandler {
+impl DeviceHandler {
   pub fn new() -> Self {
-    MyDeviceHandler {
+    DeviceHandler {
       configured: AtomicBool::new(false),
     }
   }
 }
 
-impl Handler for MyDeviceHandler {
+impl Handler for DeviceHandler {
   fn enabled(&mut self, enabled: bool) {
     self.configured.store(false, Ordering::Relaxed);
     if enabled {

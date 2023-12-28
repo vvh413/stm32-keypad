@@ -1,26 +1,29 @@
 #![no_std]
 #![no_main]
+#![feature(type_alias_impl_trait)]
 
 mod buttons;
 mod handlers;
 
-use buttons::Buttons;
+use buttons::{Buttons, KEYS, KEYS_OFFSET, KEYS_SIGNAL, SECTOR_SIZE};
 use defmt::*;
 use embassy_executor::Spawner;
+use embassy_stm32::flash::Flash;
 use embassy_stm32::rcc::*;
 use embassy_stm32::time::Hertz;
 use embassy_stm32::usb_otg::Driver;
-use embassy_stm32::{bind_interrupts, peripherals, usb_otg, Config, Peripherals};
+use embassy_stm32::{bind_interrupts, flash, peripherals, usb_otg, Config, Peripherals};
 use embassy_time::Timer;
 use embassy_usb::class::hid::{HidReaderWriter, State};
 use embassy_usb::Builder;
 use futures::future::join3;
-use handlers::{MyDeviceHandler, MyRequestHandler};
+use handlers::{CustomRequestHandler, DeviceHandler};
 use usbd_hid::descriptor::{KeyboardReport, SerializedDescriptor};
 use {defmt_rtt as _, panic_probe as _};
 
 bind_interrupts!(struct Irqs {
-    OTG_FS => usb_otg::InterruptHandler<peripherals::USB_OTG_FS>;
+  OTG_FS => usb_otg::InterruptHandler<peripherals::USB_OTG_FS>;
+  FLASH => flash::InterruptHandler;
 });
 
 fn init() -> Peripherals {
@@ -46,14 +49,34 @@ fn init() -> Peripherals {
   embassy_stm32::init(config)
 }
 
+#[embassy_executor::task]
+async fn flash_task(mut flash: Flash<'static>) {
+  KEYS.lock(|keys| {
+    let mut data = [0u8; 4];
+    flash.read(KEYS_OFFSET, &mut data).unwrap();
+    if data != [255; 4] {
+      keys.replace(data);
+    }
+  });
+  loop {
+    KEYS_SIGNAL.wait().await;
+    let keys = KEYS.lock(|keys| *keys.borrow());
+    flash.erase(KEYS_OFFSET, KEYS_OFFSET + SECTOR_SIZE).await.unwrap();
+    flash.write(KEYS_OFFSET, &keys).await.unwrap();
+  }
+}
+
 #[embassy_executor::main]
-async fn main(_spawner: Spawner) {
+async fn main(spawner: Spawner) {
   let p = init();
 
   let mut ep_out_buffer = [0u8; 256];
-  let mut config = embassy_stm32::usb_otg::Config::default();
+  let mut config = usb_otg::Config::default();
   config.vbus_detection = false;
-  let driver = Driver::new_fs(p.USB_OTG_FS, Irqs, p.PA12, p.PA11, &mut ep_out_buffer, config);
+  let otg_fs_driver = Driver::new_fs(p.USB_OTG_FS, Irqs, p.PA12, p.PA11, &mut ep_out_buffer, config);
+
+  let flash = Flash::new(p.FLASH, Irqs);
+  spawner.spawn(flash_task(flash)).unwrap();
 
   let mut config = embassy_usb::Config::new(0x7668, 0x0001);
   config.manufacturer = Some("vvh413");
@@ -64,12 +87,12 @@ async fn main(_spawner: Spawner) {
   let mut bos_descriptor = [0; 256];
   let mut control_buf = [0; 64];
 
-  let request_handler = MyRequestHandler {};
-  let mut device_handler = MyDeviceHandler::new();
+  let request_handler = CustomRequestHandler {};
+  let mut device_handler = DeviceHandler::new();
   let mut state = State::new();
 
   let mut builder = Builder::new(
-    driver,
+    otg_fs_driver,
     config,
     &mut device_descriptor,
     &mut config_descriptor,
@@ -85,7 +108,7 @@ async fn main(_spawner: Spawner) {
     poll_ms: 1,
     max_packet_size: 64,
   };
-  let hid = HidReaderWriter::<_, 1, 8>::new(&mut builder, &mut state, config);
+  let hid = HidReaderWriter::<_, 4, 8>::new(&mut builder, &mut state, config);
   let mut usb = builder.build();
   let usb_fut = usb.run();
 
@@ -97,9 +120,11 @@ async fn main(_spawner: Spawner) {
     info!("Waiting for writer to be ready");
     writer.ready().await;
     loop {
-      if let Some(key) = buttons.get_key() {
+      if let Some(idx) = buttons.get_pressed() {
+        let keys = KEYS.lock(|keys| *keys.borrow());
+        info!("keys {}", keys);
         let report = KeyboardReport {
-          keycodes: [key, 0, 0, 0, 0, 0],
+          keycodes: [keys[idx], 0, 0, 0, 0, 0],
           leds: 0,
           modifier: 0,
           reserved: 0,
