@@ -1,20 +1,11 @@
-use core::cell::RefCell;
 use core::ops::RangeInclusive;
-
 use debouncr::{debounce_8, Debouncer, Repeat8};
 use defmt::*;
 use embassy_stm32::adc::{Adc, AdcPin};
 use embassy_stm32::gpio::Pin;
 use embassy_stm32::peripherals::ADC1;
-use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
-use embassy_sync::blocking_mutex::Mutex;
-use embassy_sync::signal::Signal;
 use embassy_time::Delay;
 
-pub const KEYS_OFFSET: u32 = 0xc000;
-pub const SECTOR_SIZE: u32 = 16 * 1024;
-pub static KEYS: Mutex<CriticalSectionRawMutex, RefCell<[u8; 4]>> = Mutex::new(RefCell::new([0x68, 0x69, 0x6a, 0x6b]));
-pub static KEYS_SIGNAL: Signal<CriticalSectionRawMutex, ()> = Signal::new();
 const THRESHOLDS: [RangeInclusive<u16>; 4] = [700..=1000, 1500..=1800, 2300..=2600, 3200..=3500];
 
 pub struct Buttons<'a, P>

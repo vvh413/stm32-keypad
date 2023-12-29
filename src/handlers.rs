@@ -1,11 +1,10 @@
 use core::sync::atomic::{AtomicBool, Ordering};
-
 use defmt::info;
 use embassy_usb::class::hid::{ReportId, RequestHandler};
 use embassy_usb::control::OutResponse;
 use embassy_usb::Handler;
 
-use crate::buttons::{KEYS, KEYS_SIGNAL};
+use crate::config::{CONFIG, UPDATE_SIGNAL};
 
 pub struct CustomRequestHandler {}
 
@@ -17,11 +16,11 @@ impl RequestHandler for CustomRequestHandler {
 
   fn set_report(&self, id: ReportId, data: &[u8]) -> OutResponse {
     info!("Set report for {:?}: {=[u8]}", id, data);
-    if data.len() == 4 {
-      KEYS.lock(|keys| {
-        keys.replace(data.try_into().unwrap());
+    if data.len() == 8 {
+      CONFIG.lock(|keys| {
+        keys.borrow_mut().update(data);
       });
-      KEYS_SIGNAL.signal(());
+      UPDATE_SIGNAL.signal(());
     }
     OutResponse::Accepted
   }

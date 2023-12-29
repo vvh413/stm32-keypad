@@ -1,11 +1,15 @@
 #![no_std]
 #![no_main]
 #![feature(type_alias_impl_trait)]
+#![feature(generic_const_exprs)]
+#![allow(incomplete_features)]
 
 mod buttons;
+mod config;
 mod handlers;
 
-use buttons::{Buttons, KEYS, KEYS_OFFSET, KEYS_SIGNAL, SECTOR_SIZE};
+use buttons::Buttons;
+use config::{CONFIG, CONFIG_OFFSET, SECTOR_SIZE, UPDATE_SIGNAL};
 use defmt::*;
 use embassy_executor::Spawner;
 use embassy_stm32::flash::Flash;
@@ -51,21 +55,20 @@ fn init() -> Peripherals {
 }
 
 #[embassy_executor::task]
-async fn flash_task(mut flash: Flash<'static>, led: AnyPin) {
+async fn config_flash_task(mut flash: Flash<'static>, led: AnyPin) {
   let mut led = Output::new(led, embassy_stm32::gpio::Level::High, embassy_stm32::gpio::Speed::Low);
-  KEYS.lock(|keys| {
-    let mut data = [0u8; 4];
-    flash.read(KEYS_OFFSET, &mut data).unwrap();
-    if data != [255; 4] {
-      keys.replace(data);
-    }
+  CONFIG.lock(|config| {
+    let mut config = config.borrow_mut();
+    let mut data = config.alloc_buf();
+    flash.read(CONFIG_OFFSET, &mut data).unwrap();
+    config.update(&data);
   });
   loop {
-    KEYS_SIGNAL.wait().await;
+    UPDATE_SIGNAL.wait().await;
     led.toggle();
-    let keys = KEYS.lock(|keys| *keys.borrow());
-    flash.erase(KEYS_OFFSET, KEYS_OFFSET + SECTOR_SIZE).await.unwrap();
-    flash.write(KEYS_OFFSET, &keys).await.unwrap();
+    let config_bytes = CONFIG.lock(|config| config.borrow().to_bytes());
+    flash.erase(CONFIG_OFFSET, CONFIG_OFFSET + SECTOR_SIZE).await.unwrap();
+    flash.write(CONFIG_OFFSET, &config_bytes).await.unwrap();
     led.toggle();
   }
 }
@@ -80,7 +83,7 @@ async fn main(spawner: Spawner) {
   let otg_fs_driver = Driver::new_fs(p.USB_OTG_FS, Irqs, p.PA12, p.PA11, &mut ep_out_buffer, config);
 
   let flash = Flash::new(p.FLASH, Irqs);
-  spawner.spawn(flash_task(flash, p.PC13.degrade())).unwrap();
+  spawner.spawn(config_flash_task(flash, p.PC13.degrade())).unwrap();
 
   let mut config = embassy_usb::Config::new(0x7668, 0x0001);
   config.manufacturer = Some("vvh413");
@@ -112,7 +115,7 @@ async fn main(spawner: Spawner) {
     poll_ms: 1,
     max_packet_size: 64,
   };
-  let hid = HidReaderWriter::<_, 4, 8>::new(&mut builder, &mut state, config);
+  let hid = HidReaderWriter::<_, 8, 8>::new(&mut builder, &mut state, config);
   let mut usb = builder.build();
   let usb_fut = usb.run();
 
@@ -125,12 +128,11 @@ async fn main(spawner: Spawner) {
     writer.ready().await;
     loop {
       if let Some(idx) = buttons.get_pressed() {
-        let keys = KEYS.lock(|keys| *keys.borrow());
-        info!("keys {}", keys);
+        let config = CONFIG.lock(|config| *config.borrow());
         let report = KeyboardReport {
-          keycodes: [keys[idx], 0, 0, 0, 0, 0],
+          keycodes: [config.keys[idx], 0, 0, 0, 0, 0],
           leds: 0,
-          modifier: 0,
+          modifier: config.modifiers[idx],
           reserved: 0,
         };
         writer.write_serialize(&report).await.unwrap();
