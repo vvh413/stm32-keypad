@@ -8,6 +8,12 @@ use embassy_time::Delay;
 
 const THRESHOLDS: [RangeInclusive<u16>; 4] = [700..=1000, 1500..=1800, 2300..=2600, 3200..=3500];
 
+pub enum State {
+  Rising(usize),
+  Falling,
+  None,
+}
+
 pub struct Buttons<'a, P>
 where
   P: Pin + AdcPin<ADC1>,
@@ -32,26 +38,25 @@ where
     self.adc.read(&mut self.pin)
   }
 
-  pub fn get_pressed(&mut self) -> Option<usize> {
+  pub fn get_state(&mut self) -> State {
     let value = self.read();
     // debug!("analog value: {}", value);
-    let mut idx = None;
+    let mut idx = State::None;
     for (i, threshold) in THRESHOLDS.iter().enumerate() {
       match self.debouncers[i].update(threshold.contains(&value)) {
         Some(debouncr::Edge::Rising) => {
           info!("button #{} pressed", i);
-          idx = Some(i);
+          idx = State::Rising(i);
         }
         Some(debouncr::Edge::Falling) => {
-          info!("button #{} released", i)
+          info!("button #{} released", i);
+          if matches!(idx, State::None) {
+            idx = State::Falling;
+          }
         }
         None => {}
       }
     }
     idx
-  }
-
-  pub fn all_released(&self) -> bool {
-    self.debouncers.iter().all(|debouncer| debouncer.is_low())
   }
 }

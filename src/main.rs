@@ -8,10 +8,9 @@ mod buttons;
 mod config;
 mod handlers;
 
-use buttons::Buttons;
 use config::{CONFIG, CONFIG_OFFSET, SECTOR_SIZE, UPDATE_SIGNAL};
-use defmt::*;
 use embassy_executor::Spawner;
+use embassy_futures::join::join;
 use embassy_stm32::flash::Flash;
 use embassy_stm32::gpio::{AnyPin, Output, Pin};
 use embassy_stm32::rcc::*;
@@ -21,7 +20,6 @@ use embassy_stm32::{bind_interrupts, flash, peripherals, usb_otg, Config, Periph
 use embassy_time::Timer;
 use embassy_usb::class::hid::{HidReaderWriter, State};
 use embassy_usb::Builder;
-use futures::future::join3;
 use handlers::{CustomRequestHandler, DeviceHandler};
 use usbd_hid::descriptor::{KeyboardReport, SerializedDescriptor};
 use {defmt_rtt as _, panic_probe as _};
@@ -88,6 +86,12 @@ async fn main(spawner: Spawner) {
   let mut config = embassy_usb::Config::new(0x7668, 0x0001);
   config.manufacturer = Some("vvh413");
   config.product = Some("stm32 keypad");
+  config.serial_number = Some("00000001");
+
+  config.device_class = 0xEF;
+  config.device_sub_class = 0x02;
+  config.device_protocol = 0x01;
+  config.composite_with_iads = true;
 
   let mut device_descriptor = [0; 256];
   let mut config_descriptor = [0; 256];
@@ -117,35 +121,42 @@ async fn main(spawner: Spawner) {
   };
   let hid = HidReaderWriter::<_, 8, 8>::new(&mut builder, &mut state, config);
   let mut usb = builder.build();
-  let usb_fut = usb.run();
 
-  let mut buttons = Buttons::new(p.ADC1, p.PA1);
+  let usb_fut = async {
+    loop {
+      usb.run_until_suspend().await;
+      usb.wait_resume().await;
+    }
+  };
+
+  let mut buttons = buttons::Buttons::new(p.ADC1, p.PA1);
 
   let (reader, mut writer) = hid.split();
 
   let in_fut = async {
-    info!("Waiting for writer to be ready");
-    writer.ready().await;
     loop {
-      if let Some(idx) = buttons.get_pressed() {
-        let config = CONFIG.lock(|config| *config.borrow());
-        let report = KeyboardReport {
-          keycodes: [config.keys[idx], 0, 0, 0, 0, 0],
-          leds: 0,
-          modifier: config.modifiers[idx],
-          reserved: 0,
-        };
-        writer.write_serialize(&report).await.unwrap();
-      }
-
-      if buttons.all_released() {
-        let report = KeyboardReport {
-          keycodes: [0, 0, 0, 0, 0, 0],
-          leds: 0,
-          modifier: 0,
-          reserved: 0,
-        };
-        writer.write_serialize(&report).await.unwrap();
+      writer.ready().await;
+      match buttons.get_state() {
+        buttons::State::Rising(idx) => {
+          let config = CONFIG.lock(|config| *config.borrow());
+          let report = KeyboardReport {
+            keycodes: [config.keys[idx], 0, 0, 0, 0, 0],
+            leds: 0,
+            modifier: config.modifiers[idx],
+            reserved: 0,
+          };
+          writer.write_serialize(&report).await.unwrap();
+        }
+        buttons::State::Falling => {
+          let report = KeyboardReport {
+            keycodes: [0, 0, 0, 0, 0, 0],
+            leds: 0,
+            modifier: 0,
+            reserved: 0,
+          };
+          writer.write_serialize(&report).await.unwrap();
+        }
+        buttons::State::None => {}
       }
 
       Timer::after_millis(5).await;
@@ -156,5 +167,5 @@ async fn main(spawner: Spawner) {
     reader.run(false, &request_handler).await;
   };
 
-  join3(usb_fut, in_fut, out_fut).await;
+  join(usb_fut, join(in_fut, out_fut)).await;
 }
