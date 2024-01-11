@@ -16,7 +16,7 @@ impl RequestHandler for CustomRequestHandler {
 
   fn set_report(&self, id: ReportId, data: &[u8]) -> OutResponse {
     info!("Set report for {:?}: {=[u8]}", id, data);
-    if data.len() == 8 {
+    if data.len() == 12 {
       CONFIG.lock(|keys| {
         keys.borrow_mut().update(data);
       });

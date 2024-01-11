@@ -10,7 +10,7 @@ const THRESHOLDS: [RangeInclusive<u16>; 4] = [700..=1000, 1500..=1800, 2300..=26
 
 pub enum State {
   Rising(usize),
-  Falling,
+  Falling(usize),
   None,
 }
 
@@ -51,7 +51,7 @@ where
         Some(debouncr::Edge::Falling) => {
           info!("button #{} released", i);
           if matches!(idx, State::None) {
-            idx = State::Falling;
+            idx = State::Falling(i);
           }
         }
         None => {}

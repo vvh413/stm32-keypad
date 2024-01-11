@@ -8,7 +8,7 @@ mod buttons;
 mod config;
 mod handlers;
 
-use config::{CONFIG, CONFIG_OFFSET, SECTOR_SIZE, UPDATE_SIGNAL};
+use config::{Key, CONFIG, CONFIG_OFFSET, SECTOR_SIZE, UPDATE_SIGNAL};
 use embassy_executor::Spawner;
 use embassy_futures::join::join;
 use embassy_stm32::flash::Flash;
@@ -18,10 +18,10 @@ use embassy_stm32::time::Hertz;
 use embassy_stm32::usb_otg::Driver;
 use embassy_stm32::{bind_interrupts, flash, peripherals, usb_otg, Config, Peripherals};
 use embassy_time::Timer;
-use embassy_usb::class::hid::{HidReaderWriter, State};
+use embassy_usb::class::hid::{HidReaderWriter, HidWriter, State};
 use embassy_usb::Builder;
 use handlers::{CustomRequestHandler, DeviceHandler};
-use usbd_hid::descriptor::{KeyboardReport, SerializedDescriptor};
+use usbd_hid::descriptor::{KeyboardReport, MediaKeyboardReport, SerializedDescriptor};
 use {defmt_rtt as _, panic_probe as _};
 
 bind_interrupts!(struct Irqs {
@@ -100,7 +100,8 @@ async fn main(spawner: Spawner) {
 
   let request_handler = CustomRequestHandler {};
   let mut device_handler = DeviceHandler::new();
-  let mut state = State::new();
+  let mut state_kb = State::new();
+  let mut state_media = State::new();
 
   let mut builder = Builder::new(
     otg_fs_driver,
@@ -113,15 +114,23 @@ async fn main(spawner: Spawner) {
   );
   builder.handler(&mut device_handler);
 
-  let config = embassy_usb::class::hid::Config {
+  let config_kb = embassy_usb::class::hid::Config {
     report_descriptor: KeyboardReport::desc(),
     request_handler: Some(&request_handler),
     poll_ms: 1,
     max_packet_size: 64,
   };
-  let hid = HidReaderWriter::<_, 8, 8>::new(&mut builder, &mut state, config);
-  let mut usb = builder.build();
+  let hid_kb = HidReaderWriter::<_, 12, 8>::new(&mut builder, &mut state_kb, config_kb);
 
+  let config_media = embassy_usb::class::hid::Config {
+    report_descriptor: MediaKeyboardReport::desc(),
+    request_handler: None,
+    poll_ms: 1,
+    max_packet_size: 64,
+  };
+  let mut writer_media = HidWriter::<_, 8>::new(&mut builder, &mut state_media, config_media);
+
+  let mut usb = builder.build();
   let usb_fut = async {
     loop {
       usb.run_until_suspend().await;
@@ -131,35 +140,21 @@ async fn main(spawner: Spawner) {
 
   let mut buttons = buttons::Buttons::new(p.ADC1, p.PA1);
 
-  let (reader, mut writer) = hid.split();
+  let (reader, mut writer_kb) = hid_kb.split();
 
   let in_fut = async {
     loop {
-      writer.ready().await;
-      match buttons.get_state() {
-        buttons::State::Rising(idx) => {
-          let config = CONFIG.lock(|config| *config.borrow());
-          let report = KeyboardReport {
-            keycodes: [config.keys[idx], 0, 0, 0, 0, 0],
-            leds: 0,
-            modifier: config.modifiers[idx],
-            reserved: 0,
-          };
-          writer.write_serialize(&report).await.unwrap();
-        }
-        buttons::State::Falling => {
-          let report = KeyboardReport {
-            keycodes: [0, 0, 0, 0, 0, 0],
-            leds: 0,
-            modifier: 0,
-            reserved: 0,
-          };
-          writer.write_serialize(&report).await.unwrap();
-        }
-        buttons::State::None => {}
-      }
-
-      Timer::after_millis(5).await;
+      writer_kb.ready().await;
+      let report = match buttons.get_state() {
+        buttons::State::Rising(idx) => CONFIG.lock(|config| config.borrow().get_key_report(idx)),
+        buttons::State::Falling(idx) => CONFIG.lock(|config| config.borrow().get_zero_report(idx)),
+        buttons::State::None => Key::Unknown,
+      };
+      match report {
+        Key::Keyboard(report) => writer_kb.write_serialize(&report).await.unwrap(),
+        Key::Media(report) => writer_media.write_serialize(&report).await.unwrap(),
+        Key::Unknown => Timer::after_millis(1).await,
+      };
     }
   };
 
