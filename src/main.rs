@@ -159,7 +159,7 @@ async fn main(spawner: Spawner) {
   };
 
   let out_fut = async {
-    reader.run(false, &request_handler).await;
+    reader.run(true, &request_handler).await;
   };
 
   join(usb_fut, join(in_fut, out_fut)).await;
